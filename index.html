@@ -1054,50 +1054,66 @@ function render() {
 }
 
 let _drag=null;
-document.addEventListener('pointermove',e=>{
-  if(!_drag) return;
+function _dragMove(cx,cy){
   if(_drag.active){
-    _drag.ghost.style.left=(e.clientX-_drag.ghost.offsetWidth/2)+'px';
-    _drag.ghost.style.top=(e.clientY-14)+'px';
+    _drag.ghost.style.left=(cx-_drag.ghost.offsetWidth/2)+'px';
+    _drag.ghost.style.top=(cy-14)+'px';
     _drag.ghost.style.visibility='hidden';
-    const under=document.elementFromPoint(e.clientX,e.clientY);
+    const under=document.elementFromPoint(cx,cy);
     _drag.ghost.style.visibility='';
     document.querySelectorAll('.day-cell.drag-over').forEach(c=>c.classList.remove('drag-over'));
     under?.closest('.day-cell')?.classList.add('drag-over');
     return;
   }
-  if(Math.hypot(e.clientX-_drag.startX,e.clientY-_drag.startY)>8){
+  if(Math.hypot(cx-_drag.startX,cy-_drag.startY)>8){
     _drag.active=true;
     const chip=_drag.chipEl;
     const g=chip.cloneNode(true);
     g.style.cssText=chip.style.cssText+';position:fixed;z-index:9999;pointer-events:none;opacity:.85;margin:0;width:'+chip.offsetWidth+'px';
-    g.style.left=(e.clientX-chip.offsetWidth/2)+'px';
-    g.style.top=(e.clientY-14)+'px';
+    g.style.left=(cx-chip.offsetWidth/2)+'px';
+    g.style.top=(cy-14)+'px';
     document.body.appendChild(g);
     _drag.ghost=g;
     chip.style.opacity='.2';
   }
-});
-document.addEventListener('pointerup',e=>{
-  if(!_drag) return;
-  if(_drag.active){
-    if(_drag.ghost){ _drag.ghost.remove(); _drag.ghost=null; }
-    if(_drag.chipEl) _drag.chipEl.style.opacity='';
-    const tCell=document.querySelector('.day-cell.drag-over');
-    document.querySelectorAll('.day-cell.drag-over').forEach(c=>c.classList.remove('drag-over'));
-    const evId=_drag.evId; _drag=null;
-    if(tCell?.dataset.date) rescheduleEvent(evId,tCell.dataset.date);
-  } else {
-    openEventForm(_drag.evId); _drag=null;
-  }
-});
-document.addEventListener('pointercancel',()=>{
-  if(!_drag) return;
+}
+function _dragDrop(){
+  if(_drag.ghost){ _drag.ghost.remove(); _drag.ghost=null; }
+  if(_drag.chipEl) _drag.chipEl.style.opacity='';
+  const tCell=document.querySelector('.day-cell.drag-over');
+  document.querySelectorAll('.day-cell.drag-over').forEach(c=>c.classList.remove('drag-over'));
+  const evId=_drag.evId; _drag=null;
+  if(tCell?.dataset.date) rescheduleEvent(evId,tCell.dataset.date);
+}
+function _dragCancel(){
   if(_drag.ghost) _drag.ghost.remove();
   if(_drag.chipEl) _drag.chipEl.style.opacity='';
   document.querySelectorAll('.day-cell.drag-over').forEach(c=>c.classList.remove('drag-over'));
   _drag=null;
+}
+document.addEventListener('pointermove',e=>{
+  if(!_drag||e.pointerType==='touch') return;
+  _dragMove(e.clientX,e.clientY);
 });
+document.addEventListener('pointerup',e=>{
+  if(!_drag||e.pointerType==='touch') return;
+  if(_drag.active){ _dragDrop(); } else { openEventForm(_drag.evId); _drag=null; }
+});
+document.addEventListener('pointercancel',e=>{
+  if(!_drag||e.pointerType==='touch') return;
+  _dragCancel();
+});
+document.addEventListener('touchmove',e=>{
+  if(!_drag) return;
+  e.preventDefault();
+  const t=e.touches[0];
+  _dragMove(t.clientX,t.clientY);
+},{passive:false});
+document.addEventListener('touchend',e=>{
+  if(!_drag) return;
+  if(_drag.active){ _dragDrop(); } else { openEventForm(_drag.evId); _drag=null; }
+});
+document.addEventListener('touchcancel',()=>{ if(_drag) _dragCancel(); });
 function renderMonth(container) {
   const wrap=el('div','');
   wrap.style.cssText='display:flex;flex-direction:column;flex:1;overflow:hidden';
@@ -1146,8 +1162,14 @@ function renderMonth(container) {
       }
       chip.addEventListener('pointerdown',e=>{
         e.stopPropagation();
+        if(e.pointerType==='touch') return;
         _drag={evId:ev.id,chipEl:chip,startX:e.clientX,startY:e.clientY,ghost:null,active:false};
       });
+      chip.addEventListener('touchstart',e=>{
+        e.stopPropagation();
+        const t=e.touches[0];
+        _drag={evId:ev.id,chipEl:chip,startX:t.clientX,startY:t.clientY,ghost:null,active:false};
+      },{passive:true});
       cell.appendChild(chip);
     });
     if(evs.length>3){
