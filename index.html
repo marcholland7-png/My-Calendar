@@ -92,6 +92,7 @@ body{font-family:-apple-system,'SF Pro Text','Segoe UI',system-ui,sans-serif;ove
 }
 .chip-single .chip-time{font-size:.68rem;opacity:.8;font-weight:500}
 .more{font-size:.62rem;color:var(--muted);padding:1px 5px}
+.day-cell.drag-over{background:rgba(92,107,192,.22) !important;outline:2px dashed var(--accent);outline-offset:-3px}
 
 /* ── Week view ── */
 #week-view{flex:1;display:flex;flex-direction:column;overflow:hidden}
@@ -1052,6 +1053,7 @@ function render() {
   else                             renderAgenda(main);
 }
 
+let _drag=null;
 function renderMonth(container) {
   const wrap=el('div','');
   wrap.style.cssText='display:flex;flex-direction:column;flex:1;overflow:hidden';
@@ -1072,6 +1074,7 @@ function renderMonth(container) {
     else if(i>=firstDay+days){ d=new Date(year,month+1,i-firstDay-days+1); other=true; }
     else d=new Date(year,month,i-firstDay+1);
     const cell=el('div','day-cell'+(other?' other':'')+(isSameDay(d,today)?' today':''));
+    cell.dataset.date=fmt(d);
     // Short tap → day sheet, long press → add event
     let pressTimer=null;
     cell.addEventListener('pointerdown',()=>{
@@ -1097,7 +1100,55 @@ function renderMonth(container) {
         time.textContent=ev.startTime;
         chip.appendChild(time);
       }
-      chip.addEventListener('click',e=>{e.stopPropagation();openEventForm(ev.id);});
+      chip.addEventListener('pointerdown',e=>{
+        e.stopPropagation();
+        chip.setPointerCapture(e.pointerId);
+        _drag={evId:ev.id,chipEl:chip,startX:e.clientX,startY:e.clientY,ghost:null,active:false};
+      });
+      chip.addEventListener('pointermove',e=>{
+        if(!_drag||_drag.evId!==ev.id) return;
+        if(_drag.active){
+          _drag.ghost.style.left=(e.clientX-_drag.ghost.offsetWidth/2)+'px';
+          _drag.ghost.style.top=(e.clientY-14)+'px';
+          _drag.ghost.style.visibility='hidden';
+          const under=document.elementFromPoint(e.clientX,e.clientY);
+          _drag.ghost.style.visibility='';
+          document.querySelectorAll('.day-cell.drag-over').forEach(c=>c.classList.remove('drag-over'));
+          under?.closest('.day-cell')?.classList.add('drag-over');
+          return;
+        }
+        if(Math.hypot(e.clientX-_drag.startX,e.clientY-_drag.startY)>8){
+          _drag.active=true;
+          const g=chip.cloneNode(true);
+          g.style.cssText=chip.style.cssText+';position:fixed;z-index:9999;pointer-events:none;opacity:.85;margin:0;width:'+chip.offsetWidth+'px';
+          g.style.left=(e.clientX-chip.offsetWidth/2)+'px';
+          g.style.top=(e.clientY-14)+'px';
+          document.body.appendChild(g);
+          _drag.ghost=g;
+          chip.style.opacity='.2';
+        }
+      });
+      chip.addEventListener('pointerup',e=>{
+        if(!_drag||_drag.evId!==ev.id) return;
+        if(_drag.active){
+          _drag.ghost.style.visibility='hidden';
+          const under=document.elementFromPoint(e.clientX,e.clientY);
+          _drag.ghost.remove();
+          chip.style.opacity='';
+          document.querySelectorAll('.day-cell.drag-over').forEach(c=>c.classList.remove('drag-over'));
+          const tCell=under?.closest('.day-cell');
+          if(tCell?.dataset.date&&tCell.dataset.date!==ev.date) rescheduleEvent(ev.id,tCell.dataset.date);
+        } else {
+          openEventForm(ev.id);
+        }
+        _drag=null;
+      });
+      chip.addEventListener('pointercancel',()=>{
+        if(_drag?.ghost) _drag.ghost.remove();
+        if(_drag?.chipEl) _drag.chipEl.style.opacity='';
+        document.querySelectorAll('.day-cell.drag-over').forEach(c=>c.classList.remove('drag-over'));
+        _drag=null;
+      });
       cell.appendChild(chip);
     });
     if(evs.length>3){
@@ -1109,6 +1160,15 @@ function renderMonth(container) {
   }
   wrap.appendChild(grid);
   container.appendChild(wrap);
+}
+
+function rescheduleEvent(evId, newDate) {
+  const ev=events.find(e=>e.id===evId);
+  if(!ev) return;
+  ev.date=newDate;
+  saveEvents();
+  renderView();
+  showToast('Event moved ✓');
 }
 
 // ━━━ Day detail sheet ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2257,6 +2317,7 @@ function _markShown(nid) { const s=_getShown(); s[nid]=Date.now(); localStorage.
 function fireNotification(ev) {
   if(!('Notification' in window) || Notification.permission!=='granted') return;
   const nid = ev.id+'_'+ev.reminder+'_'+ev.date;
+  if(_getShown()[nid]) return;
   _markShown(nid);
   const isPreEvent = !isNaN(parseInt(ev.reminder));
   const title = isPreEvent ? `⏰ Coming up: ${ev.title||'Event'}` : `📅 Today: ${ev.title||'Event'}`;
@@ -2300,10 +2361,29 @@ function scheduleReminders() {
     if(ms < 0 && ms > -8*60*60*1000) {
       fireNotification(ev);
     } else if(ms > 0 && ms < 8*24*60*60*1000) {
-      if(!_scheduledIds.has(key)) { _scheduledIds.add(key); setTimeout(()=>fireNotification(ev), ms); }
+      if(!_scheduledIds.has(key)) {
+        _scheduledIds.add(key);
+        const isPreEvent=!isNaN(parseInt(ev.reminder));
+        const ntitle=isPreEvent?`⏰ Coming up: ${ev.title||'Event'}`:`📅 Today: ${ev.title||'Event'}`;
+        const nparts=[];
+        if(ev.startTime) nparts.push(ev.startTime+(ev.endTime?' – '+ev.endTime:''));
+        if(ev.location) nparts.push(ev.location);
+        const nbody=nparts.join(' · ')||ev.date;
+        // Schedule in service worker so it survives after the tab is closed
+        navigator.serviceWorker?.ready.then(reg=>{
+          reg.active?.postMessage({type:'SCHEDULE_NOTIF',nid,fireAt:fireAt.getTime(),title:ntitle,body:nbody});
+        }).catch(()=>{});
+        // Fallback main-thread timer (while tab is open)
+        setTimeout(()=>{ if(!_getShown()[nid]) fireNotification(ev); }, ms);
+      }
     }
   });
 }
+
+// When SW fires a notification, mark it shown so the fallback timer skips it
+navigator.serviceWorker?.addEventListener('message',e=>{
+  if(e.data?.type==='NOTIF_SHOWN') _markShown(e.data.nid);
+});
 
 // Run on load
 if('Notification' in window && Notification.permission==='granted') scheduleReminders();
